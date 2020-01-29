@@ -48,7 +48,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train','-T', type=bool, default=False, help='set train mode up')
-    parser.add_argument('--run_demo','-I', type=bool, default=True, help='run demo')
+    parser.add_argument('--train','-T', type=bool, default=True, help='set train mode up')
+    parser.add_argument('--run_demo','-I', type=bool, default=False, help='run demo')
     args = parser.parse_args()
     main(args)

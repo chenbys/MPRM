@@ -1,7 +1,6 @@
 dataset: 
-  # _name: pascal_voc_classification
   split: trainval
-  data_dir: ./datasets/VOCdevkit
+  data_dir: ../dataset/VOCdevkit
   year: 2012
 
 train_transform:

@@ -1,4 +1,3 @@
-
 from losses import multilabel_soft_margin_loss
 from model import fc_resnet50, finetune
 from prm.prm import peak_response_mapping, prm_visualize
@@ -11,15 +10,16 @@ from typing import Tuple, List, Union, Dict, Iterable
 from torch.autograd import Variable
 import matplotlib.pyplot as plt
 from scipy.misc import imresize
-
+import torch.nn as nn
 image_size = 448
+
 
 class Solver(object):
 
     def __init__(self, config):
         """Initialize configurations."""
         self.basebone = fc_resnet50(20, True)
-        self.model = peak_response_mapping(self.basebone, **config['model'])
+        self.model = nn.DataParallel(peak_response_mapping(self.basebone, **config['model']))
         self.criterion = multilabel_soft_margin_loss
 
         self.max_epoch = config['max_epoch']
@@ -27,7 +27,7 @@ class Solver(object):
 
         self.params = finetune(self.model, **config['finetune'])
         # print(self.params)
-        self.optimizer = sgd_optimizer(self.params , **config['optimizer'])
+        self.optimizer = sgd_optimizer(self.params, **config['optimizer'])
         self.lr_update_step = 999999
         self.lr = config['optimizer']['lr']
         self.snapshot = config['snapshot']
@@ -63,13 +63,13 @@ class Solver(object):
     def count_parameters(self, model):
         return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    def save_checkpoint(self,state,  path, prefix,epoch, filename='checkpoint.pth.tar'):
+    def save_checkpoint(self, state, path, prefix, epoch, filename='checkpoint.pth.tar'):
         prefix_save = os.path.join(path, prefix)
-        name = '%s_%d_%s' % (prefix_save,epoch,filename)
+        name = '%s_%d_%s' % (prefix_save, epoch, filename)
         torch.save(state, name)
-        shutil.copyfile(name,  '%s_latest.pth.tar' % (prefix_save))
+        shutil.copyfile(name, '%s_latest.pth.tar' % (prefix_save))
 
-    def train(self, train_data_loader, train_logger, val_data_loader = None, val_logger = None,resume_iters=0 ):
+    def train(self, train_data_loader, train_logger, val_data_loader=None, val_logger=None, resume_iters=0):
 
         # torch.manual_seed(999)
 
@@ -81,9 +81,8 @@ class Solver(object):
         # Start training.
         print('Start training...')
         since = time.time()
-        
-        self.model.train()  # Set model to training mode
 
+        self.model.train()  # Set model to training mode
 
         for epoch in range(self.max_epoch):
             average_loss = 0.
@@ -100,10 +99,11 @@ class Solver(object):
 
                 _output = self.model(inp)
 
-                loss = self.criterion(_output ,tar, difficult_samples=True)
+                loss = self.criterion(_output, tar, difficult_samples=True)
 
-                average_loss += loss.data[0]
-                print('trainning loss at (epoch %d, iteration %d) = %4f' % (epoch + 1, iteration, average_loss/(iteration+1)))
+                average_loss += loss.item()
+                print('trainning loss at (epoch %d, iteration %d) = %4f' % (
+                epoch + 1, iteration, average_loss / (iteration + 1)))
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -111,41 +111,38 @@ class Solver(object):
 
                 #################### LOGGING #############################
                 lr = self.optimizer.param_groups[0]['lr']
-                train_logger.add_scalar('lr',  lr, epoch)
-                train_logger.add_scalar('loss',  loss , epoch)
+                train_logger.add_scalar('lr', lr, epoch)
+                train_logger.add_scalar('loss', loss, epoch)
 
-            self.save_checkpoint({'arch':'prm',
-                                'lr':self.lr,
-                                'epoch':epoch,
-                                'state_dict': self.model.state_dict(),
-                                'error':average_loss},
-                                self.snapshot,'prm_', epoch)
+            self.save_checkpoint({'arch'      : 'prm',
+                                  'lr'        : self.lr,
+                                  'epoch'     : epoch,
+                                  'state_dict': self.model.state_dict(),
+                                  'error'     : average_loss},
+                                 self.snapshot, 'prm_', epoch)
 
-        
-            print('training %d epoch,loss is %.4f' % ( epoch+1, average_loss))
+            print('training %d epoch,loss is %.4f' % (epoch + 1, average_loss))
             # TO-DO: modify learning rates.
-            
-                
-        time_elapsed = time.time() - since
-        print('train phrase completed in %.0fm %.0fs'% (time_elapsed // 60, time_elapsed % 60))
-    
 
-    def inference(self,  input_var, raw_img, epoch=0, proposals=None):
+        time_elapsed = time.time() - since
+        print('train phrase completed in %.0fm %.0fs' % (time_elapsed // 60, time_elapsed % 60))
+
+    def inference(self, input_var, raw_img, epoch=0, proposals=None):
         self.restore_model(epoch)
 
-        plt.figure(figsize=(5,5))
+        plt.figure(figsize=(5, 5))
         plt.imshow(raw_img)
 
         self.model.eval()
-        
+
         # print(input_var)
 
         class_names = [
-        'aeroplane', 'bicycle', 'bird', 'boat',
-        'bottle', 'bus', 'car', 'cat', 'chair',
-        'cow', 'diningtable', 'dog', 'horse',
-        'motorbike', 'person', 'pottedplant',
-        'sheep', 'sofa', 'train', 'tvmonitor']
+            'aeroplane', 'bicycle', 'bird', 'boat',
+            'bottle', 'bus', 'car', 'cat', 'chair',
+            'cow', 'diningtable', 'dog', 'horse',
+            'motorbike', 'person', 'pottedplant',
+            'sheep', 'sofa', 'train', 'tvmonitor']
         print('Object categories: ' + ', '.join(class_names))
 
         print('Object categories in the image:')
@@ -156,9 +153,8 @@ class Solver(object):
             if confidence.data[0, idx] > 0:
                 print('[class_idx: %d] %s (%.2f)' % (idx, class_names[idx], confidence[0, idx]))
 
-
         # Visual cue extraction
-        
+
         self.model.inference()
 
         visual_cues = self.model(input_var, peak_threshold=30)
@@ -178,11 +174,12 @@ class Solver(object):
             axarr[1].imshow(class_response_maps[0, class_idx].cpu(), interpolation='bicubic')
             axarr[1].set_title('Class Response Map ("%s")' % class_names[class_idx])
             axarr[1].axis('off')
-            for idx, (prm, peak) in enumerate(sorted(zip(peak_response_maps, class_peak_responses), key=lambda v: v[-1][-1])):
+            for idx, (prm, peak) in enumerate(
+                    sorted(zip(peak_response_maps, class_peak_responses), key=lambda v: v[-1][-1])):
                 axarr[idx + 2].imshow(prm.cpu(), cmap=plt.cm.jet)
                 axarr[idx + 2].set_title('Peak Response Map ("%s")' % (class_names[peak[1].item()]))
                 axarr[idx + 2].axis('off')
-        
+
         # Weakly supervised instance segmentation
         # predict instance masks via proposal retrieval
         instance_list = self.model(input_var, retrieval_cfg=dict(proposals=proposals, param=(0.95, 1e-5, 0.8)))
@@ -205,7 +202,6 @@ class Solver(object):
             axarr[2].axis('off')
             plt.show()
 
-
-    def validation(self, data_loader,test_logger,inference_epoch=0):
+    def validation(self, data_loader, test_logger, inference_epoch=0):
         # to-do
         pass
